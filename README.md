@@ -1,4 +1,4 @@
-# Mapping_Police_violence
+#Mapping Police Violence
 INST327 Group Project
 Members: Danieshia Maragh, Sharon Madu, Kimberly Gordon, Rachel Galloway, Ediale Odia 
 
