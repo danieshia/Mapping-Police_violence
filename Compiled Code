@@ -1,0 +1,195 @@
+-- ============================================================
+-- SETUP: Age groups lookup table
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS age_groups (
+    min_age INT,
+    max_age INT,
+    label   VARCHAR(20)
+);
+
+INSERT INTO age_groups (min_age, max_age, label) VALUES
+    (0,   9,   'Under 10'),
+    (10,  17,  '10–17'),
+    (18,  24,  '18–24'),
+    (25,  34,  '25–34'),
+    (35,  44,  '35–44'),
+    (45,  54,  '45–54'),
+    (55,  64,  '55–64'),
+    (65,  999, '65+');
+
+
+-- ============================================================
+-- VIEW 1: Leading cause of death in California by age group
+-- JOIN: police_violence + age_groups
+-- Filter: WHERE state = 'California'
+-- Aggregation: COUNT, GROUP BY
+-- ============================================================
+
+CREATE VIEW v_ca_cause_of_death AS
+SELECT
+    ag.label AS age_group,
+    pv.cause_of_death,
+    COUNT(pv.fe_id) AS total_incidents
+FROM police_violence pv
+JOIN age_groups ag
+    ON pv.age BETWEEN ag.min_age AND ag.max_age
+WHERE pv.state = 'California'
+  AND pv.age IS NOT NULL
+  AND pv.cause_of_death IS NOT NULL
+GROUP BY ag.label, pv.cause_of_death
+ORDER BY total_incidents DESC;
+
+
+-- ============================================================
+-- VIEW 2: Minor incidents — count + most common initial reason
+-- JOIN: police_violence + age_groups
+-- Subquery: flags the top initial_reason per age group
+-- Filter: WHERE age < 18, last 5 years
+-- Aggregation: COUNT, GROUP BY
+-- ============================================================
+
+CREATE VIEW v_minor_incidents_summary AS
+SELECT
+    ag.label AS age_group,
+    pv.initial_reason,
+    COUNT(pv.fe_id) AS incident_count,
+    ROUND(AVG(pv.age), 1) AS avg_age
+FROM police_violence pv
+JOIN age_groups ag
+    ON pv.age BETWEEN ag.min_age AND ag.max_age
+WHERE pv.age < 18
+  AND pv.date >= DATE_SUB(CURDATE(), INTERVAL 5 YEAR)
+  AND pv.initial_reason IN (
+      SELECT initial_reason
+      FROM police_violence
+      WHERE age < 18
+        AND date >= DATE_SUB(CURDATE(), INTERVAL 5 YEAR)
+        AND initial_reason IS NOT NULL
+      GROUP BY initial_reason
+      HAVING COUNT(fe_id) > 1
+  )
+GROUP BY ag.label, pv.initial_reason
+ORDER BY incident_count DESC;
+
+
+-- ============================================================
+-- VIEW 3: Agencies with above-average lethal incidents, by age group
+-- JOIN: police_violence + age_groups
+-- Filter: HAVING lethal_incidents > subquery avg
+-- Aggregation: COUNT, GROUP BY
+-- ============================================================
+
+CREATE VIEW v_agency_above_avg AS
+SELECT
+    pv.agency_responsible AS department,
+    pv.state,
+    ag.label AS most_common_age_group,
+    COUNT(pv.fe_id) AS lethal_incidents
+FROM police_violence pv
+JOIN age_groups ag
+    ON pv.age BETWEEN ag.min_age AND ag.max_age
+WHERE pv.cause_of_death IS NOT NULL
+  AND pv.age IS NOT NULL
+GROUP BY pv.agency_responsible, pv.state, ag.label
+HAVING lethal_incidents > (
+    SELECT AVG(dept_total)
+    FROM (
+        SELECT COUNT(fe_id) AS dept_total
+        FROM police_violence
+        WHERE cause_of_death IS NOT NULL
+        GROUP BY agency_responsible, state
+    ) AS dept_counts
+)
+ORDER BY lethal_incidents DESC;
+
+
+-- ============================================================
+-- VIEW 4: Gender comparison across age groups
+-- JOIN: police_violence + age_groups
+-- Filter: WHERE gender IN (...)
+-- Aggregation: COUNT, AVG, GROUP BY
+-- ============================================================
+
+CREATE VIEW v_gender_comparison AS
+SELECT
+    pv.gender,
+    ag.label AS age_group,
+    COUNT(pv.fe_id) AS total_incidents,
+    ROUND(AVG(pv.age), 1) AS average_age,
+    COUNT(DISTINCT pv.state) AS states_involved,
+    COUNT(DISTINCT pv.cause_of_death) AS distinct_causes_of_death
+FROM police_violence pv
+JOIN age_groups ag
+    ON pv.age BETWEEN ag.min_age AND ag.max_age
+WHERE pv.gender IN ('Male', 'Female')
+  AND pv.age IS NOT NULL
+GROUP BY pv.gender, ag.label
+ORDER BY pv.gender, total_incidents DESC;
+
+
+-- ============================================================
+-- VIEW 5: Time patterns — incidents by month, day, and age group
+-- JOIN: police_violence + age_groups
+-- Filter: WHERE date IS NOT NULL
+-- Aggregation: COUNT, GROUP BY
+-- ============================================================
+
+CREATE VIEW v_time_patterns AS
+SELECT
+    MONTHNAME(pv.date) AS month,
+    DAYNAME(pv.date) AS day_of_week,
+    ag.label AS age_group,
+    COUNT(pv.fe_id) AS total_incidents
+FROM police_violence pv
+JOIN age_groups ag
+    ON pv.age BETWEEN ag.min_age AND ag.max_age
+WHERE pv.date IS NOT NULL
+  AND pv.age IS NOT NULL
+GROUP BY MONTH(pv.date), MONTHNAME(pv.date), DAYNAME(pv.date), ag.label
+ORDER BY MONTH(pv.date), total_incidents DESC;
+
+
+-- ============================================================
+-- STANDALONE QUERIES (not views)
+-- ============================================================
+
+-- Racial/ethnic group with the highest number of victims
+SELECT
+    race,
+    COUNT(fe_id) AS race_ethnicity_count
+FROM police_violence
+GROUP BY race
+ORDER BY race_ethnicity_count DESC
+LIMIT 1;
+
+-- Leading encounter type associated with mental illness
+SELECT
+    encounter_type,
+    COUNT(fe_id) AS incident_count
+FROM police_violence
+WHERE signs_of_mental_illness = 'Yes'
+GROUP BY encounter_type
+ORDER BY incident_count DESC;
+
+-- Percentage of incidents where officer was charged
+SELECT
+    ROUND(
+        SUM(CASE
+            WHEN officer_charged IS NOT NULL
+             AND officer_charged != 'No known charges' THEN 1
+            ELSE 0
+        END) * 100.0 / COUNT(fe_id),
+    2) AS percent_charged
+FROM police_violence;
+
+-- Age group with the highest number of incidents
+SELECT
+    ag.label AS age_group,
+    COUNT(pv.fe_id) AS incident_count
+FROM police_violence pv
+JOIN age_groups ag
+    ON pv.age BETWEEN ag.min_age AND ag.max_age
+WHERE pv.age IS NOT NULL
+GROUP BY ag.label
+ORDER BY incident_count DESC;
